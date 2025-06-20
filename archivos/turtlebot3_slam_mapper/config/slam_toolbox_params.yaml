@@ -1,0 +1,59 @@
+slam_toolbox:
+  ros__parameters:
+    solver_plugin: solver_plugins::CeresSolver
+    # General Parameters
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan
+    mode: mapping # localization, mapping
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02  # تقريبا 50hz
+    map_update_interval: 5.0
+    resolution: 0.05
+    max_laser_range: 3.5 # For TurtleBot3 Burger LDS-01
+    # map_multi_resolution_factor: 2.0 # For multi-resolution mapping, experimental
+
+    # Ceres Scan Matcher Parameters
+    ceres_scan_matcher:
+      occupied_space_weight: 20.0
+      translation_weight: 10.0
+      rotation_weight: 10.0
+      ceres_solver_options:
+        use_nonmonotonic_steps: false
+        max_num_iterations: 50
+        num_threads: 1
+
+    # Scan Matcher Parameters
+    scan_matcher_type: CeresScanMatcher
+    distance_variance_penalty: 0.1
+    angle_variance_penalty: 0.1
+    fine_search_angle_offset: 0.0034906585 # 0.2 degrees
+    coarse_search_angle_offset: 0.034906585 # 2.0 degrees
+    max_scan_distance: 1000.0
+    max_odom_translational_distance: 0.2
+    max_odom_rotational_distance: 0.2
+
+    # Graph Optimizer Parameters
+    graph_update_constraints_every_n_scans: 10
+    graph_update_loop_closures_every_n_scans: 10
+    # global_localization_on_every_n_scans: 0 # Disabled
+    # global_loc_search_dist: 5.0
+    # global_loc_visualize_every_nth: 10
+
+    # Loop Closure Parameters
+    loop_closure_search_type: AreaMatcher # BruteForce, AreaMatcher, DistanceAngle, Curvature
+    loop_closure_minimum_scan_similarity: 0.65
+    loop_closure_search_max_distance: 5.0
+    loop_closure_search_min_distance: 0.5
+    # loop_closure_translation_max_uncertainty: 0.5
+    # loop_closure_rotation_max_uncertainty: 0.5
+    # loop_closure_scan_matching_max_distance: 0.5
+    # loop_closure_area_match_min_area: 0.5
+    # loop_closure_area_match_max_area_difference: 0.25
+
+    # Interactive Mode Parameters
+    interactive_mode_throttle_rate: 1.0
+    # interactive_clear_map_area_half_width: 1.0
+    # interactive_clear_map_area_half_height: 1.0 
