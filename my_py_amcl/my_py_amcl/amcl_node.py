@@ -14,6 +14,40 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from tf2_ros import TransformBroadcaster, TransformListener, Buffer
 
+def quaternion_to_euler(x, y, z, w, degrees=False):
+    """
+    Convert quaternion (x, y, z, w) to Euler angles (pitch, roll, yaw) using NumPy.
+    Rotation order is 'xyz'.
+
+    Returns:
+        pitch (float), roll (float), yaw (float)
+    """
+    # Normalize the quaternion
+    norm = np.sqrt(x*x + y*y + z*z + w*w)
+    x, y, z, w = x / norm, y / norm, z / norm, w / norm
+
+    # Roll (x-axis rotation)
+    sinr = 2.0 * (w * x + y * z)
+    cosr = 1.0 - 2.0 * (x * x + y * y)
+    roll = np.arctan2(sinr, cosr)
+
+    sinp = 2.0 * (w * y - z * x)
+    if np.abs(sinp) >= 1:
+        pitch = np.pi / 2 * np.sign(sinp)
+    else:
+        pitch = np.arcsin(sinp)
+
+    # Yaw (z-axis rotation)
+    siny = 2.0 * (w * z + x * y)
+    cosy = 1.0 - 2.0 * (y * y + z * z)
+    yaw = np.arctan2(siny, cosy)
+
+    if degrees:
+        return float(np.degrees(pitch)), float(np.degrees(roll)), float(np.degrees(yaw))
+    else:
+        return float(pitch), float(roll), float(yaw)
+
+
 class State(Enum):
     IDLE = 0
     PLANNING = 1
@@ -34,7 +68,6 @@ Hay que localizarlo (para tener una referencia)
 Para localizar (filtro de particulas o capaz usar ICP (TP6))
 
 """
-
 class AmclNode(Node):
     def __init__(self):
         super().__init__('my_py_amcl')
@@ -166,28 +199,28 @@ class AmclNode(Node):
         # TODO: Inicializar particulas en base a la pose inicial con variaciones aleatorias
         # Deben ser la misma cantidad de particulas que self.num_particles
         # Deben tener un peso
-
-
-
-
-
-
-
+        for idx in range(self.num_particles):
+            orientation = initial_pose.orientation
+            poseX = initial_pose.position.x + np.random.normal(0,0.02)
+            poseY = initial_pose.position.y + np.random.normal(0,0.02)
+            theta = quaternion_to_euler(orientation.x, orientation.y, orientation.z, orientation.w) + np.random.normal(0,0.02)
+            self.particles[idx] = np.array([poseX, poseY, theta])
 
         self.publish_particles()
 
     def initialize_particles_randomly(self):
         # TODO: Inizializar particulas aleatoriamente en todo el mapa
         
-        
+        origin_x = self.map_data.info.origin.position.x
+        origin_y = self.map_data.info.origin.position.y
+        map_width_meters = self.map_data.info.width * self.map_data.info.resolution
+        map_height_meters = self.map_data.info.height * self.map_data.info.resolution
 
-
-
-
-
-
-
-
+        for idx in range(self.num_particles):
+            poseX = np.random.uniform(origin_x, origin_x + map_width_meters)
+            poseY = np.random.uniform(origin_x, origin_y + map_height_meters)
+            rand_theta = np.random.uniform(-np.pi, np.pi)
+            self.particles[idx] = np.array([poseX, poseY, rand_theta])
 
 
         self.publish_particles()
