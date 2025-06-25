@@ -70,8 +70,7 @@ def generate_launch_description():
             executable='amcl_node',
             name='my_py_amcl',
             output='screen',
-            parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
-            arguments=['-d', rviz_config_file, '--ros-args', '--log-level', 'WARN']  # Oculta mensajes INFO
+            parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
         ),
 
         TimerAction(
@@ -95,7 +94,7 @@ def generate_launch_description():
             executable='rviz2',
             name='rviz2',
             output='screen',
-            arguments=['-d', rviz_config_file, '--ros-args', '--log-level', 'WARN'],  # Oculta mensajes INFO
+            arguments=['-d', rviz_config_file],
             parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}]
         ),
     ]) 

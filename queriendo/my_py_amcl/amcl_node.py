@@ -88,7 +88,7 @@ class AmclNode(Node):
         self.declare_parameter('alpha4', 0.001)  # Error traslacional debido a rotación
         self.declare_parameter('z_hit', 0.95)  # Peso del modelo de hit (peso de la probabilidad de que la lectura coincida con el mapa)
         self.declare_parameter('z_rand', 0.1)  # Peso de detección aleatoria
-        self.declare_parameter('lookahead_distance', 0.6)  # Reducir de 0.7 a 0.3
+        self.declare_parameter('lookahead_distance', 0.3)  # Reducir de 0.7 a 0.3
         self.declare_parameter('goal_tolerance', 0.15)     # Reducir de 0.2 a 0.15
         self.declare_parameter('linear_velocity', 0.2) # Velocidad lineal que asignas al avanzar en la rama “avanzar con giro moderado”.
         self.declare_parameter('path_pruning_distance', 0.15)  # Distancia para podar path
@@ -167,8 +167,6 @@ class AmclNode(Node):
 
         self.timer = self.create_timer(0.1, self.timer_callback)
         self.get_logger().warn('MyPyAMCL node initialized.')
-
-        self.cant_index = None
 
     def map_callback(self, msg):
         if not self.map_received:
@@ -389,29 +387,26 @@ class AmclNode(Node):
 
             # Buscar el punto objetivo
             target_index = self.search_target_point_index(robot_x, robot_y)
-            self.current_path_index = target_index
             target_x, target_y = self.current_path[target_index]
+            
             # Calcular ángulo hacia el objetivo
             target_angle = np.arctan2(target_y - robot_y, target_x - robot_x)
             angle_error = target_angle - robot_yaw
             # Normalizar el ángulo al rango [-pi, pi]
             angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
             
-            # self.get_logger().warn(f"[DEBUG] Robot: ({robot_x:.8f}, {robot_y:.8f}), Angle: {robot_yaw}, Target: ({target_x:.8f}, {target_y:.8f}), Index: {target_index}/{len(self.current_path)-1}")
-            self.get_logger().warn(f"[DEBUG] Angle error: {np.degrees(angle_error):.1f}°, Angle: {angle_error}")
+            self.get_logger().warn(f"[DEBUG] Robot: ({robot_x:.8f}, {robot_y:.8f}), Angle: {robot_yaw}, Target: ({target_x:.8f}, {target_y:.8f}), Index: {target_index}/{len(self.current_path)-1}")
+            self.get_logger().warn(f"[DEBUG] Angle error: {np.degrees(angle_error):.1f}°")
 
             # FASE DE ALINEACIÓN: Si el error angular es grande, solo girar
             if abs(angle_error) > self.yaw_tolerance:
                 self.get_logger().warn(f"[ALIGN] Alineando robot - Error: {np.degrees(angle_error):.1f}°")
+                
+                # Control proporcional para la rotación
                 angular_velocity = self.kp_ang * angle_error
-                # Garantizar velocidad angular mínima para girar con suavidad
-
-                angular_velocity = np.sign(angular_velocity) * 0.15
-                angular_velocity = np.clip(
-                    angular_velocity,
-                    -self.max_ang_speed,
-                    self.max_ang_speed
-                )
+                angular_velocity = np.clip(angular_velocity, -self.max_ang_speed, self.max_ang_speed)
+                
+                # Publicar solo velocidad angular (sin avance)
                 twist_msg = Twist()
                 twist_msg.linear.x = 0.0
                 twist_msg.angular.z = angular_velocity
@@ -607,291 +602,98 @@ class AmclNode(Node):
 
         return heuristic
 
+    def get_neighborhood(self, cell, occ_map_shape):
+
+        fila, col = cell
+        filas_totales, columnas_totales = occ_map_shape
+
+        movimientos = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+        vecinos = []
+        for df, dc in movimientos:
+            nueva_fila, nueva_col = fila + df, col + dc
+            if 0 <= nueva_fila < filas_totales and 0 <= nueva_col < columnas_totales:
+                vecinos.append((nueva_fila, nueva_col))
+
+        return vecinos
+    
+    def get_edge_cost(self, parent, child):
+        fila_p, col_p = parent
+        fila_c, col_c = child
+        
+        # SOLUCIÓN: Usar mapa inflado en lugar del original
+        if self.inflated_grid[fila_c, col_c] >= 50:  # Obstáculo en mapa inflado
+            return float('inf')
+
+        # Costo euclidiano
+        if abs(fila_p - fila_c) + abs(col_p - col_c) == 2:  # Movimiento diagonal
+            return 1.414  # sqrt(2)
+        else:
+            return 1.0    # Movimiento cardinal
+
     def A_algorithm(self, start_pose, goal_pose):
         """
         Planifica una ruta desde una pose de inicio a una pose objetivo usando el algoritmo A*.
-        Basado en la implementación de planning_framework.py
         :param start_pose: Pose de inicio (geometry_msgs/Pose).
         :param goal_pose: Pose objetivo (geometry_msgs/Pose).
         :return: Una lista de tuplas (x, y) con las coordenadas del mundo si se encuentra ruta, de lo contrario None.
         """
         self.get_logger().warn("A* planning started.")
         
-        # Convertir poses del mundo a coordenadas de grilla
         start_grid = self.world_to_grid(start_pose.position.x, start_pose.position.y)
         goal_grid = self.world_to_grid(goal_pose.position.x, goal_pose.position.y)
-        
-        # Validar que start y goal estén dentro del mapa
+
         map_h, map_w = self.inflated_grid.shape
-        if not (0 <= start_grid[0] < map_w and 0 <= start_grid[1] < map_h):
-            self.get_logger().error("La posición inicial está fuera de los límites del mapa")
-            return None
-        if not (0 <= goal_grid[0] < map_w and 0 <= goal_grid[1] < map_h):
-            self.get_logger().error("La posición del objetivo está fuera de los límites del mapa")
-            return None
+
+        start_node = AStarNode(start_grid)
+        goal_node = AStarNode(goal_grid)
         
-        # Verificar que start y goal no estén en obstáculos
-        if self.inflated_grid[start_grid[1], start_grid[0]] > 50:
-            self.get_logger().error("La posición inicial es en un obstáculo.")
-            return None
-        if self.inflated_grid[goal_grid[1], goal_grid[0]] > 50:
-            self.get_logger().error("La posición de meta está en un obstáculo")
-            return None
-        
-        # Convertir formato de coordenadas para compatibilidad con planning_framework
-        # planning_framework usa [y, x], nosotros usamos [x, y]
-        start_pf = [start_grid[1], start_grid[0]]
-        goal_pf = [goal_grid[1], goal_grid[0]]
-        
-        # Crear mapa de ocupación normalizado (0-1) desde inflated_grid
-        occ_map = self.inflated_grid.astype(float) / 100.0
-        occ_map = np.clip(occ_map, 0.0, 1.0)
-        
-        # Inicializar estructuras de datos
-        costs = np.ones(occ_map.shape) * np.inf
-        closed_flags = np.zeros(occ_map.shape, dtype=bool)
-        predecessors = -np.ones(occ_map.shape + (2,), dtype=np.int64)
-        
-        # Calcular heurística para A*
-        heuristic = np.zeros(occ_map.shape)
-        heuristic_factor = 1
-        for x in range(occ_map.shape[0]):
-            for y in range(occ_map.shape[1]):
-                heuristic[x, y] = self._get_heuristic([x, y], goal_pf) * heuristic_factor
-        
-        # Inicializar búsqueda
-        parent = np.array(start_pf)
-        costs[start_pf[0], start_pf[1]] = 0
-        
-        # Bucle principal de búsqueda
-        while not np.array_equal(parent, goal_pf):
-            # Costos de celdas candidatas para expansión (no en lista cerrada)
-            open_costs = np.where(closed_flags, np.inf, costs) + heuristic
-            
-            # Encontrar celda con costo mínimo en lista abierta
-            x, y = np.unravel_index(open_costs.argmin(), open_costs.shape)
-            
-            # Romper bucle si costos mínimos son infinitos (no hay más celdas abiertas)
-            if open_costs[x, y] == np.inf:
-                break
-            
-            # Establecer como padre y ponerlo en lista cerrada
-            parent = np.array([x, y])
-            closed_flags[x, y] = True
-            
-            # Actualizar costos y predecesores para vecinos
-            neighbors = self._get_neighborhood(parent, occ_map.shape)
-            for neighbor in neighbors:
-                y_n, x_n = neighbor
+        open_list, closed_list = [], set()
+        heapq.heappush(open_list, start_node)
+
+        while open_list:
+            current_node = heapq.heappop(open_list)
+            if current_node in closed_list: continue
+            closed_list.add(current_node)
+
+            if current_node == goal_node:
+                # --- Reconstrucción de la ruta ---
+                grid_path = []
+                current = current_node
+                while current is not None:
+                    grid_path.append(current.position)
+                    current = current.parent
+                grid_path = grid_path[::-1] # Invertir para que vaya del inicio al fin
                 
-                # Calcular costo del borde
-                edge_cost = self._get_edge_cost(parent, neighbor, occ_map)
-                if edge_cost == float('inf'):
+                # --- MODIFICACIÓN: Convertir a lista de coordenadas del mundo ---
+                world_path = []
+                for point in grid_path:
+                    world_coords = self.grid_to_world(point[0], point[1])
+                    world_path.append(world_coords)
+
+                self.get_logger().warn("A* path found.")
+                return world_path # Devolver la lista de tuplas (x, y)
+
+            # Expansión de vecinos... (sin cambios)
+            for new_position in [(0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                node_position = (current_node.position[0] + new_position[0], current_node.position[1] + new_position[1])
+
+                if not (0 <= node_position[0] < map_w and 0 <= node_position[1] < map_h) or \
+                   self.inflated_grid[node_position[1], node_position[0]] == 100:
                     continue
+
+                neighbor = AStarNode(node_position, parent=current_node)
+                if neighbor in closed_list: continue
+
+                move_cost = 1.414 if new_position[0] != 0 and new_position[1] != 0 else 1.0
+                neighbor.g = current_node.g + move_cost
+                neighbor.h = ((neighbor.position[0] - goal_node.position[0]) ** 2) + ((neighbor.position[1] - goal_node.position[1]) ** 2)
+                neighbor.f = neighbor.g + neighbor.h
                 
-                new_cost = costs[parent[0], parent[1]] + edge_cost
-                
-                if new_cost < costs[y_n, x_n]:
-                    costs[y_n, x_n] = new_cost
-                    predecessors[y_n, x_n] = parent
-        
-        # Reconstruir ruta desde goal hasta start
-        if np.array_equal(parent, goal_pf):
-            # Encontrar ruta desde goal hasta start
-            grid_path = []
-            current = np.array(goal_pf)
-            
-            while predecessors[current[0], current[1]][0] >= 0:
-                # Convertir de formato [y, x] a [x, y] para world_to_grid
-                grid_x = current[1]
-                grid_y = current[0]
-                world_coords = self.grid_to_world(grid_x, grid_y)
-                grid_path.append(world_coords)
-                current = predecessors[current[0], current[1]]
-            
-            # Agregar punto de inicio
-            world_coords = self.grid_to_world(start_grid[0], start_grid[1])
-            grid_path.append(world_coords)
-            
-            # Invertir para que vaya del inicio al fin
-            grid_path = grid_path[::-1]
-            
-            self.get_logger().warn(f"A* encontrao ruta con {len(grid_path)} celdas.")
-            # por distancia recorrida y costo por pasar cerca de los obstaculos 
-            self.get_logger().warn(f"Costo acumulado del camino: {costs[goal_pf[0], goal_pf[1]]:.2f}")
-            
-            return grid_path
-        else:
-            self.get_logger().warn("A* failed to find a path.")
-            return None
+                heapq.heappush(open_list, neighbor)
 
-    def _get_neighborhood(self, cell, occ_map_shape):
-        """
-        Obtiene los vecinos de una celda (hasta 8 vecinos).
-        
-        Arguments:
-        cell -- coordenadas de celda como [y, x]
-        occ_map_shape -- forma del mapa de ocupación (ny, nx)
-        
-        Output:
-        neighbors -- lista de tuplas de coordenadas de vecinos [(y1, x1), (y2, x2), ...]
-        """
-        fila, col = cell
-        filas_totales, columnas_totales = occ_map_shape
-        
-        movimientos = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
-        
-        vecinos = []
-        for df, dc in movimientos:
-            nueva_fila, nueva_col = fila + df, col + dc
-            if 0 <= nueva_fila < filas_totales and 0 <= nueva_col < columnas_totales:
-                vecinos.append((nueva_fila, nueva_col))
-        
-        return vecinos
-
-    def _get_edge_cost(self, parent, child, occ_map):
-        """
-        Calcula el costo de moverse de parent a child.
-        
-        Arguments:
-        parent, child -- coordenadas de celda como [y, x]
-        occ_map -- mapa de probabilidad de ocupación
-        
-        Output:
-        edge_cost -- costo calculado
-        """
-        y_p, x_p = parent
-        y_c, x_c = child
-        p_ocup = occ_map[y_c, x_c]
-        
-        # Si la probabilidad de ocupación es alta, retornar costo infinito
-        if p_ocup > 0.7:  # Umbral de 50% para considerar obstáculo
-            return float('inf')
-        
-        # Calcular distancia euclidiana
-        p_p = np.array([x_p, y_p])
-        p_c = np.array([x_c, y_c])
-        distancia = np.linalg.norm(p_c - p_p)
-        
-        # Costo del borde considerando probabilidad de ocupación
-        edge_cost = distancia * (1.0 + float(p_ocup))
-        
-        return edge_cost
-
-    def _get_heuristic(self, cell, goal):
-        """
-        Estima el costo de moverse de cell a goal basado en heurística.
-        
-        Arguments:
-        cell, goal -- coordenadas de celda como [y, x]
-        
-        Output:
-        cost -- costo estimado
-        """
-        y_c, x_c = cell
-        y_g, x_g = goal
-        
-        dy = y_c - y_g
-        dx = x_c - x_g
-        
-        # Distancia euclidiana como heurística
-        heuristic = np.hypot(dy, dx)
-        
-        return heuristic
-
-
-    # def get_neighborhood(self, cell, occ_map_shape):
-
-    #     fila, col = cell
-    #     filas_totales, columnas_totales = occ_map_shape
-
-    #     movimientos = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
-
-    #     vecinos = []
-    #     for df, dc in movimientos:
-    #         nueva_fila, nueva_col = fila + df, col + dc
-    #         if 0 <= nueva_fila < filas_totales and 0 <= nueva_col < columnas_totales:
-    #             vecinos.append((nueva_fila, nueva_col))
-
-    #     return vecinos
-    
-    # def get_edge_cost(self, parent, child):
-    #     fila_p, col_p = parent
-    #     fila_c, col_c = child
-        
-    #     # SOLUCIÓN: Usar mapa inflado en lugar del original
-    #     if self.inflated_grid[fila_c, col_c] >= 50:  # Obstáculo en mapa inflado
-    #         return float('inf')
-
-    #     # Costo euclidiano
-    #     if abs(fila_p - fila_c) + abs(col_p - col_c) == 2:  # Movimiento diagonal
-    #         return 1.414  # sqrt(2)
-    #     else:
-    #         return 1.0    # Movimiento cardinal
-
-    # def A_algorithm(self, start_pose, goal_pose):
-    #     """
-    #     Planifica una ruta desde una pose de inicio a una pose objetivo usando el algoritmo A*.
-    #     :param start_pose: Pose de inicio (geometry_msgs/Pose).
-    #     :param goal_pose: Pose objetivo (geometry_msgs/Pose).
-    #     :return: Una lista de tuplas (x, y) con las coordenadas del mundo si se encuentra ruta, de lo contrario None.
-    #     """
-    #     self.get_logger().warn("A* planning started.")
-        
-    #     start_grid = self.world_to_grid(start_pose.position.x, start_pose.position.y)
-    #     goal_grid = self.world_to_grid(goal_pose.position.x, goal_pose.position.y)
-
-    #     map_h, map_w = self.inflated_grid.shape
-
-    #     start_node = AStarNode(start_grid)
-    #     goal_node = AStarNode(goal_grid)
-        
-    #     open_list, closed_list = [], set()
-    #     heapq.heappush(open_list, start_node)
-
-    #     while open_list:
-    #         current_node = heapq.heappop(open_list)
-    #         if current_node in closed_list: continue
-    #         closed_list.add(current_node)
-
-    #         if current_node == goal_node:
-    #             # --- Reconstrucción de la ruta ---
-    #             grid_path = []
-    #             current = current_node
-    #             while current is not None:
-    #                 grid_path.append(current.position)
-    #                 current = current.parent
-    #             grid_path = grid_path[::-1] # Invertir para que vaya del inicio al fin
-                
-    #             # --- MODIFICACIÓN: Convertir a lista de coordenadas del mundo ---
-    #             world_path = []
-    #             for point in grid_path:
-    #                 world_coords = self.grid_to_world(point[0], point[1])
-    #                 world_path.append(world_coords)
-
-    #             self.get_logger().warn("A* path found.")
-    #             return world_path # Devolver la lista de tuplas (x, y)
-
-    #         # Expansión de vecinos... (sin cambios)
-    #         for new_position in [(0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-    #             node_position = (current_node.position[0] + new_position[0], current_node.position[1] + new_position[1])
-
-    #             if not (0 <= node_position[0] < map_w and 0 <= node_position[1] < map_h) or \
-    #                self.inflated_grid[node_position[1], node_position[0]] == 100:
-    #                 continue
-
-    #             neighbor = AStarNode(node_position, parent=current_node)
-    #             if neighbor in closed_list: continue
-
-    #             move_cost = 1.414 if new_position[0] != 0 and new_position[1] != 0 else 1.0
-    #             neighbor.g = current_node.g + move_cost
-    #             neighbor.h = ((neighbor.position[0] - goal_node.position[0]) ** 2) + ((neighbor.position[1] - goal_node.position[1]) ** 2)
-    #             neighbor.f = neighbor.g + neighbor.h
-                
-    #             heapq.heappush(open_list, neighbor)
-
-    #     self.get_logger().warn("A* failed to find a path. The open list is empty.")
-    #     return None
+        self.get_logger().warn("A* failed to find a path. The open list is empty.")
+        return None
 
     def get_odom_transform(self):
         try:
