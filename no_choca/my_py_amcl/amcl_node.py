@@ -57,11 +57,12 @@ class AmclNode(Node):
         self.declare_parameter('goal_topic', '/goal_pose')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('obstacle_detection_distance', 0.3) # Distancia minima que considero que hay obstaculo inminente
-        self.declare_parameter('obstacle_avoidance_turn_speed', 0.5) # Velocidad angular usada cuando detectas obstáculo y entras en modo evasión
+        self.declare_parameter('obstacle_avoidance_turn_speed', 0.2) # Velocidad angular usada cuando detectas obstáculo y entras en modo evasión
 
         # --- Parameters to set ---
         # TODO: Setear valores default
         self.declare_parameter('num_particles', 20)
+        # Alpha Modelo de odometria
         self.declare_parameter('alpha1', 0.005)  # Error rotacional debido a rotación
         self.declare_parameter('alpha2', 0.005)  # Error rotacional debido a traslación
         self.declare_parameter('alpha3', 0.001)  # Error traslacional debido a traslación
@@ -71,7 +72,7 @@ class AmclNode(Node):
         self.declare_parameter('lookahead_distance', 0.2)  # Reducir de 0.7 a 0.3
         self.declare_parameter('goal_tolerance', 0.2)
         self.declare_parameter('linear_velocity', 0.15) # Velocidad lineal que asignas al avanzar en la rama “avanzar con giro moderado”.
-        # self.declare_parameter('path_pruning_distance', 0.15)  # Distancia para podar path
+        self.declare_parameter('path_pruning_distance', 0.15)  # Distancia para podar path
         self.declare_parameter('safety_margin_cells', 5)  # Margen de seguridad en celdas
     
         self.declare_parameter('yaw_tolerance', 0.05)
@@ -315,18 +316,17 @@ class AmclNode(Node):
             # FASE DE ALINEACIÓN antes del Pure Pursuit
             robot_x = estimated_pose.position.x
             robot_y = estimated_pose.position.y
-            if np.hypot(self.goal_pose.position.x - robot_x, self.goal_pose.position.y - robot_y) < self.goal_tolerance:
-                self.get_logger().warn(f"¡Objetivo alcanzado!")
-                self.stop_robot()
-                self.state = State.IDLE
-                return
-
             _, _, robot_yaw = quaternion_to_euler(
                 estimated_pose.orientation.x,
                 estimated_pose.orientation.y,
                 estimated_pose.orientation.z,
                 estimated_pose.orientation.w
             )
+            if np.hypot(self.goal_pose.position.x - robot_x, self.goal_pose.position.y - robot_y) < self.goal_tolerance:
+                self.get_logger().warn(f"¡Objetivo alcanzado!")
+                self.stop_robot()
+                self.state = State.IDLE
+                return
 
             target_index = self.search_target_point_index(robot_x, robot_y)
             self.current_path_index = target_index
@@ -360,12 +360,12 @@ class AmclNode(Node):
         elif self.state == State.AVOIDING_OBSTACLE:
             twist = Twist()
             twist.linear.x = 0.0
-            twist.angular.z = self.obstacle_avoidance_turn_speed
+            twist.angular.z = self.avoid_turn_speed
             self.cmd_vel_pub.publish(twist)
 
             if not self.check_for_imminent_obstacle():
-                self.get_logger().warn("Obstáculo esquivado. State -> PLANNING")
-                self.state = State.PLANNING
+                self.get_logger().warn("Obstáculo esquivado. State -> NAVIGATING")
+                self.state = State.NAVIGATING
 
         self.publish_pose(estimated_pose)
         self.publish_particles()
