@@ -56,31 +56,29 @@ class AmclNode(Node):
         self.declare_parameter('laser_max_range', 3.5)
         self.declare_parameter('goal_topic', '/goal_pose')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('obstacle_detection_distance', 0.25) # Distancia minima que considero que hay obstaculo inminente
-        self.declare_parameter('obstacle_avoidance_turn_speed', 0.3) # Velocidad angular usada cuando detectas obstáculo y entras en modo evasión
+        self.declare_parameter('obstacle_detection_distance', 0.3) # Distancia minima que considero que hay obstaculo inminente
+        self.declare_parameter('obstacle_avoidance_turn_speed', 0.5) # Velocidad angular usada cuando detectas obstáculo y entras en modo evasión
 
         # --- Parameters to set ---
         # TODO: Setear valores default
         self.declare_parameter('num_particles', 20)
-        self.declare_parameter('alpha1', 0.1)  # Error rotacional debido a rotación
-        self.declare_parameter('alpha2', 0.1)  # Error rotacional debido a traslación
-        self.declare_parameter('alpha3', 0.1)  # Error traslacional debido a traslación
-        self.declare_parameter('alpha4', 0.1)  # Error traslacional debido a rotación
-        self.declare_parameter('z_hit', 0.9)  # Peso del modelo de hit (peso de la probabilidad de que la lectura coincida con el mapa)
+        self.declare_parameter('alpha1', 0.005)  # Error rotacional debido a rotación
+        self.declare_parameter('alpha2', 0.005)  # Error rotacional debido a traslación
+        self.declare_parameter('alpha3', 0.001)  # Error traslacional debido a traslación
+        self.declare_parameter('alpha4', 0.001)  # Error traslacional debido a rotación
+        self.declare_parameter('z_hit', 0.95)  # Peso del modelo de hit (peso de la probabilidad de que la lectura coincida con el mapa)
         self.declare_parameter('z_rand', 0.1)  # Peso de detección aleatoria
-        self.declare_parameter('lookahead_distance', 0.22)  # Reducir de 0.7 a 0.3
+        self.declare_parameter('lookahead_distance', 0.2)  # Reducir de 0.7 a 0.3
         self.declare_parameter('goal_tolerance', 0.2)
-        self.declare_parameter('linear_velocity', 0.04) # Velocidad lineal que asignas al avanzar en la rama “avanzar con giro moderado”.
-        self.declare_parameter('path_pruning_distance', 0.15)  # Distancia para podar path
-        self.declare_parameter('safety_margin_cells', 4.5)  # Margen de seguridad en celdas
+        self.declare_parameter('linear_velocity', 0.15) # Velocidad lineal que asignas al avanzar en la rama “avanzar con giro moderado”.
+        # self.declare_parameter('path_pruning_distance', 0.15)  # Distancia para podar path
+        self.declare_parameter('safety_margin_cells', 5)  # Margen de seguridad en celdas
     
-        self.declare_parameter('yaw_tolerance', 0.01)
+        self.declare_parameter('yaw_tolerance', 0.05)
         self.declare_parameter('kp_ang', 0.7) 
         self.declare_parameter('max_ang_speed', 0.7)
-        self.declare_parameter("min_obstacle_yaw", 45)
-        self.old_nearest_point_index = None
 
-        self.min_obstacle_yaw = self.get_parameter("min_obstacle_yaw").value
+
         self.kp_ang = self.get_parameter('kp_ang').value
         self.max_ang_speed = self.get_parameter('max_ang_speed').value
         self.yaw_tolerance = self.get_parameter('yaw_tolerance').value
@@ -122,10 +120,9 @@ class AmclNode(Node):
         self.obstacle_avoidance_cumulative_angle = 0.0
         self.obstacle_avoidance_active = False
         self.grid = None
-        self.aligned = False
+
         self.current_path_index = 0
         self.initial_convergence_done = False
-        self.avoiding_obstacle_reverse_steps = 0
         # --- ROS 2 Interfaces ---
         map_qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, history=QoSHistoryPolicy.KEEP_LAST, depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
         scan_qos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT, history=QoSHistoryPolicy.KEEP_LAST, depth=10)
@@ -234,7 +231,7 @@ class AmclNode(Node):
         if self.latest_scan is None:
             return False
 
-        front_angle_range = np.deg2rad(self.min_obstacle_yaw)
+        front_angle_range = np.deg2rad(20)
         
         for i, dist in enumerate(self.latest_scan.ranges):
             angle = self.latest_scan.angle_min + i * self.latest_scan.angle_increment
@@ -303,9 +300,6 @@ class AmclNode(Node):
                 self.current_path_index = 0 
                 self.publish_path(self.create_path_message(path))
                 self.state = State.NAVIGATING
-                self.aligned = False 
-                self.old_nearest_point_index = None
-
             else:
                 self.get_logger().error('No se pudo encontrar una ruta al objetivo. State -> IDLE')
                 self.state = State.IDLE
@@ -316,17 +310,9 @@ class AmclNode(Node):
             if self.check_for_imminent_obstacle():
                 self.get_logger().warn('Obstáculo detectado! State -> AVOIDING_OBSTACLE')
                 self.state = State.AVOIDING_OBSTACLE
-
-                _, _, robot_yaw = quaternion_to_euler(
-                estimated_pose.orientation.x,
-                estimated_pose.orientation.y,
-                estimated_pose.orientation.z,
-                estimated_pose.orientation.w
-                )
-                self.obstacle_avoidance_start_yaw = robot_yaw
-                self.obstacle_avoidance_cumulative_angle = 0.0
                 return
             
+            # FASE DE ALINEACIÓN antes del Pure Pursuit
             robot_x = estimated_pose.position.x
             robot_y = estimated_pose.position.y
             if np.hypot(self.goal_pose.position.x - robot_x, self.goal_pose.position.y - robot_y) < self.goal_tolerance:
@@ -341,58 +327,45 @@ class AmclNode(Node):
                 estimated_pose.orientation.z,
                 estimated_pose.orientation.w
             )
+
             target_index = self.search_target_point_index(robot_x, robot_y)
             self.current_path_index = target_index
             target_x, target_y = self.current_path[target_index]
-                
-            if not self.aligned:
-                target_angle = np.arctan2(target_y - robot_y, target_x - robot_x)
-                angle_error = target_angle - robot_yaw
+            
+            target_angle = np.arctan2(target_y - robot_y, target_x - robot_x)
+            angle_error = target_angle - robot_yaw
 
-                angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
-                
-                self.get_logger().warn(f"[DEBUG] Angle error: {np.degrees(angle_error):.1f}°, Angle: {angle_error}")
+            angle_error = np.arctan2(np.sin(angle_error), np.cos(angle_error))
+            
+            self.get_logger().warn(f"[DEBUG] Angle error: {np.degrees(angle_error):.1f}°, Angle: {angle_error}")
 
-                if abs(angle_error) > self.yaw_tolerance:
-                    self.get_logger().warn(f"[ALIGN] Alineando robot - Error: {np.degrees(angle_error):.1f}°")
-                    angular_velocity = self.kp_ang * angle_error
+            if abs(angle_error) > self.yaw_tolerance:
+                self.get_logger().warn(f"[ALIGN] Alineando robot - Error: {np.degrees(angle_error):.1f}°")
+                angular_velocity = self.kp_ang * angle_error
 
-                    angular_velocity = np.sign(angular_velocity) * 0.15
-                    angular_velocity = np.clip(
-                        angular_velocity,
-                        -self.max_ang_speed,
-                        self.max_ang_speed
-                    )
-                    twist_msg = Twist()
-                    twist_msg.linear.x = 0.0
-                    twist_msg.angular.z = angular_velocity
-                    self.cmd_vel_pub.publish(twist_msg)
-                    return
-                else:
-                    self.aligned = True
-
-            self.get_logger().warn(f"[PURSUIT] Robot alineado - Siguiendo ruta")
-            self.pure_pursuit_control([robot_x, robot_y, robot_yaw], target_index, target_x, target_y)
+                angular_velocity = np.sign(angular_velocity) * 0.15
+                angular_velocity = np.clip(
+                    angular_velocity,
+                    -self.max_ang_speed,
+                    self.max_ang_speed
+                )
+                twist_msg = Twist()
+                twist_msg.linear.x = 0.0
+                twist_msg.angular.z = angular_velocity
+                self.cmd_vel_pub.publish(twist_msg)
+            else:
+                self.get_logger().warn(f"[PURSUIT] Robot alineado - Siguiendo ruta")
+                self.pure_pursuit_control([robot_x, robot_y, robot_yaw], target_index, target_x, target_y)
 
         elif self.state == State.AVOIDING_OBSTACLE:
-                _, _, robot_yaw = quaternion_to_euler(
-                    estimated_pose.orientation.x,
-                    estimated_pose.orientation.y,
-                    estimated_pose.orientation.z,
-                    estimated_pose.orientation.w
-                )
-                delta_yaw = robot_yaw - self.obstacle_avoidance_start_yaw
-                delta_yaw = np.arctan2(np.sin(delta_yaw), np.cos(delta_yaw))
-                self.obstacle_avoidance_cumulative_angle = abs(delta_yaw)
+            twist = Twist()
+            twist.linear.x = 0.0
+            twist.angular.z = self.obstacle_avoidance_turn_speed
+            self.cmd_vel_pub.publish(twist)
 
-                twist = Twist()
-                twist.linear.x = 0.0
-                twist.angular.z = self.obstacle_avoidance_turn_speed
-                self.cmd_vel_pub.publish(twist)
-
-                if self.obstacle_avoidance_cumulative_angle >= np.pi/2 and not self.check_for_imminent_obstacle():
-                    self.get_logger().warn("Giro de 90° completado. State -> PLANNING")
-                    self.state = State.PLANNING
+            if not self.check_for_imminent_obstacle():
+                self.get_logger().warn("Obstáculo esquivado. State -> PLANNING")
+                self.state = State.PLANNING
 
         self.publish_pose(estimated_pose)
         self.publish_particles()
@@ -400,45 +373,22 @@ class AmclNode(Node):
 
     # Busca el índice del punto objetivo en la ruta usando lookahead distance
     def search_target_point_index(self, robot_x, robot_y):
-        """
-        Busca el índice del punto objetivo en la ruta usando lookahead distance,
-        optimizando la búsqueda del punto más cercano y luego avanzando hasta cumplir lookahead.
-        """
         if self.current_path is None or len(self.current_path) == 0:
             return 0
-
-        # Guardar el índice anterior para acelerar la búsqueda
-        if not hasattr(self, 'old_nearest_point_index') or self.old_nearest_point_index is None:
-            # Buscar el punto más cercano al robot
-            dx = [robot_x - px for px, _ in self.current_path]
-            dy = [robot_y - py for _, py in self.current_path]
-            d = np.hypot(dx, dy)
-            ind = int(np.argmin(d))
-            self.old_nearest_point_index = ind
-        else:
-            ind = self.old_nearest_point_index
-            def calc_distance(ix, iy):
-                return np.hypot(robot_x - ix, robot_y - iy)
-            distance_this_index = calc_distance(*self.current_path[ind])
-            while ind + 1 < len(self.current_path):
-                distance_next_index = calc_distance(*self.current_path[ind + 1])
-                if distance_this_index < distance_next_index:
-                    break
-                ind += 1
-                distance_this_index = distance_next_index
-            self.old_nearest_point_index = ind
-
-        # Lookahead
-        Lf = self.lookahead_distance
-        def calc_distance(ix, iy):
-            return np.hypot(robot_x - ix, robot_y - iy)
-        while ind + 1 < len(self.current_path) and Lf > calc_distance(*self.current_path[ind]):
-            ind += 1
         
-        self.get_logger().warn(f"Indice que tira: {ind}")
+        dists = [np.hypot(robot_x - px, robot_y - py) for px, py in self.current_path]
+        nearest_index = int(np.argmin(dists))
 
-        return ind
-    
+        for i in range(nearest_index, len(self.current_path)):
+            point = self.current_path[i]
+            distance = np.sqrt((robot_x - point[0])**2 + (robot_y - point[1])**2)
+            
+            if distance >= self.lookahead_distance:
+                return i
+        
+        # Si no se encuentra, retornar el último punto
+        return len(self.current_path) - 1
+
     # Controlador de seguimiento de ruta usando Pure Pursuit
     def pure_pursuit_control(self, pose_robot, target_index, target_x, target_y):
         robot_x, robot_y, robot_yaw = pose_robot
@@ -579,7 +529,7 @@ class AmclNode(Node):
         y_c, x_c = child
         p_ocup = occ_map[y_c, x_c]
         
-        if p_ocup > 0.1:
+        if p_ocup > 0.7:
             return float('inf')
         
         p_p = np.array([x_p, y_p])
@@ -682,7 +632,7 @@ class AmclNode(Node):
             
             prob = 1.0
             
-            step = max(1, len(scan_ranges) // 50)
+            step = max(1, len(scan_ranges) // 100)
             
             for j in range(0, len(scan_ranges), step):
                 if not np.isfinite(scan_ranges[j]):
@@ -722,7 +672,7 @@ class AmclNode(Node):
         dy = np.sin(angle)
         
         map_res = self.map_data.info.resolution
-        step_size = map_res / 4.0
+        step_size = map_res / 2.0
         max_steps = int(self.laser_max_range / step_size)
         
         for step in range(max_steps):
@@ -746,6 +696,7 @@ class AmclNode(Node):
         # Crear CDF de los pesos
         cumulative_sum = np.cumsum(self.weights)
         
+        # Generar números aleatorios sistemáticos
         r = np.random.random() / self.num_particles
         indices = []
         
@@ -756,6 +707,7 @@ class AmclNode(Node):
                 i += 1
             indices.append(i)
         
+        # Crear nuevas partículas basadas en los índices seleccionados
         self.particles = self.particles[indices]
 
     # Bien
@@ -890,7 +842,7 @@ class AmclNode(Node):
         obstacle_map = (self.grid > 50).astype(np.uint8)
         
         # Crear kernel de inflado
-        kernel_size = 2 * int(self.safety_margin_cells) + 1
+        kernel_size = 2 * self.safety_margin_cells + 1
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
         
         # Inflar obstáculos
