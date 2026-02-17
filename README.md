@@ -39,7 +39,7 @@ The most relevant tools and components used in this project are:
 
 ## Project Structure
 
-- `archivos_parteA/`
+- `part_a_slam/`
   - Maze simulation assets.
   - `turtlebot3_slam_mapper/`: Python SLAM package and launch files.
 - `my_py_amcl/`
@@ -63,7 +63,7 @@ Implemented flow:
 
 Launch file:
 
-- `archivos_parteA/turtlebot3_slam_mapper/launch/python_slam_maze.launch.py`
+- `part_a_slam/turtlebot3_slam_mapper/launch/python_slam_maze.launch.py`
 
 ### Part B - `amcl_node`
 
@@ -102,9 +102,7 @@ ros2 launch my_py_amcl amcl_maze.launch.py
 
 ## Authors
 
-- Matias
+- Matias Luciano Antezana
 - Bruno Castanigno Rossi
 
 ---
-
-If the logo does not render, place the university image as `image.png` in the repository root.
