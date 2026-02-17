@@ -78,13 +78,13 @@ class PythonSlamNode(Node):
         self.declare_parameter('map_width_meters', 5.0)
         self.declare_parameter('map_height_meters', 5.0)
 
-        self.resolution = self.get_parameter('map_resolution').get_parameter_value().double_value # Tamaño de cada celda del mapa en metros
+        self.resolution = self.get_parameter('map_resolution').get_parameter_value().double_value # Size of each map cell in meters
         self.map_width_m = self.get_parameter('map_width_meters').get_parameter_value().double_value
         self.map_height_m = self.get_parameter('map_height_meters').get_parameter_value().double_value
         self.map_width_cells = int(self.map_width_m / self.resolution)
         self.map_height_cells = int(self.map_height_m / self.resolution)
-        self.map_origin_x = -self.map_width_m / 2.0 # Cordenada en metros del origen del mapa x
-        self.map_origin_y = -5.0 # Corrdenada en metros del origen del mapa y
+        self.map_origin_x = -self.map_width_m / 2.0 # Map origin x-coordinate in meters
+        self.map_origin_y = -5.0 # Map origin y-coordinate in meters
 
         # TODO: define the log-odds criteria for free and occupied cells
 
@@ -195,26 +195,26 @@ class PythonSlamNode(Node):
         score = 0.0
         robot_x, robot_y, robot_theta = particle.x, particle.y, particle.theta
         for i, range_dist in enumerate(scan_msg.ranges):
-            if range_dist < scan_msg.range_min or range_dist > scan_msg.range_max or math.isnan(range_dist): #ver que carajo es range min max, etc
+            if range_dist < scan_msg.range_min or range_dist > scan_msg.range_max or math.isnan(range_dist): # Validate min/max sensor range constraints
                 continue
             # TODO: Compute the map coordinates of the endpoint: transform the scan into the map frame
 
             angle = scan_msg.angle_min + i * scan_msg.angle_increment
             
-            # Lo adapto al mapa
+            # Convert endpoint to map coordinates
             x = robot_x + range_dist * np.cos(robot_theta + angle)
             y = robot_y + range_dist * np.sin(robot_theta + angle)
 
-            # Resto los indices del origen del mapa y deivido por la resolución para obtener las coord
+            # Subtract map origin and divide by resolution to obtain grid coordinates
             map_x = int((x - self.map_origin_x) / self.resolution)
             map_y = int((y - self.map_origin_y) / self.resolution)
 
             # TODO: Use particle.log_odds_map for scoring
 
-            # Verifico que esten dentro de los limites del mapa
+            # Check bounds against map limits
             if 0 <= map_x < self.map_width_cells and 0 <= map_y < self.map_height_cells:
-                # Si la probabilidad es mayor a 0 es porque está ocupada
-                if particle.log_odds_map[map_y, map_x] > 0: # por ahi puedo cambiar este parametro más adelante
+                # If probability is above zero, the cell is treated as occupied
+                if particle.log_odds_map[map_y, map_x] > 0: # Threshold can be tuned later
                     score += 1.0
 
 
@@ -245,13 +245,12 @@ class PythonSlamNode(Node):
 
     def update_map(self, particle, scan_msg):
         """
-        Actualización de la lectura de lidar a una terna global con memoria 
-        (osea que se acuerde de los puntos ocupados y los pueda guardar)
-        Se acuerda acumulandos las probabilidades de log_odds 
-        (te converge a 0 si no está ocupado o te converge a 100 si está ocupado)
+        Update each LiDAR scan in the global frame with map memory.
+        Occupied and free evidence is accumulated in log-odds form over time.
+        Values converge toward free-space or occupied-space confidence.
         """
 
-        # Acá me pongo a calcular la posición del robot en coordenadas del mapa
+        # Compute robot pose in map grid coordinates
         robot_x, robot_y, robot_theta = particle.x, particle.y, particle.theta
         map_x0 = int((robot_x - self.map_origin_x) / self.resolution)
         map_y0 = int((robot_y - self.map_origin_y) / self.resolution)
@@ -261,7 +260,7 @@ class PythonSlamNode(Node):
             if math.isnan(current_range) or current_range < scan_msg.range_min:
                 continue
 
-            # Acá convierto cada rayo en una posición en el map
+            # Convert each ray endpoint into map coordinates
             angle = robot_theta + scan_msg.angle_min + i * scan_msg.angle_increment
             x_end = robot_x + current_range * np.cos(angle)
             y_end = robot_y + current_range * np.sin(angle)
@@ -269,15 +268,15 @@ class PythonSlamNode(Node):
             map_y1 = int((y_end - self.map_origin_y) / self.resolution)
             
 
-            # Llamó bresenham_line para actualizar todas las celdas del camino del rayo que estaban libres
+            # Use bresenham_line to update free cells along the ray path
             # TODO: Use self.bresenham_line for free cells
             self.bresenham_line(particle, map_x0, map_y0, map_x1, map_y1)
-            # Marcar ocupada la celda final si hay obstáculo
+            # Mark endpoint cell as occupied if an obstacle was hit
 
             # TODO: Update particle.log_odds_map accordingly
             if is_hit:
                 if 0 <= map_x1 < self.map_width_cells and 0 <= map_y1 < self.map_height_cells:
-                    # Acá si hubo impaco se aumenta el log_odds
+                    # Increase log-odds when a valid obstacle hit is detected
                     particle.log_odds_map[map_y1, map_x1] += self.log_odds_occupied
                     particle.log_odds_map[map_y1, map_x1] = np.clip(
                     particle.log_odds_map[map_y1, map_x1], self.log_odds_min, self.log_odds_max)
@@ -285,7 +284,7 @@ class PythonSlamNode(Node):
 
     def bresenham_line(self, particle, x0, y0, x1, y1):
         """
-        Implementa el algoritmo Bresenham para trazar linea entre dos puntos en una cuadrícula
+        Implements Bresenham's algorithm to trace a line between two grid points.
         """
         dx = abs(x1 - x0)
         dy = abs(y1 - y0)
@@ -308,10 +307,10 @@ class PythonSlamNode(Node):
             path_len += 1
 
     def publish_map(self):
-        # Aca uso el mapa de la partícula con mayor peso
+        # Use the map from the highest-weight particle
         best_particle = max(self.particles, key=lambda p: p.weight)
 
-        # Crea matriz de ocupación
+        # Build occupancy grid matrix
         occ_grid = np.full(best_particle.log_odds_map.shape, -1, dtype=np.int8)
         occ_grid[best_particle.log_odds_map > 0.0] = 100
         occ_grid[best_particle.log_odds_map < 0.0] = 0
@@ -319,7 +318,7 @@ class PythonSlamNode(Node):
         map_msg = OccupancyGrid()
         map_msg.header.stamp = self.get_clock().now().to_msg()
 
-        # Acá ya me defino el frame de referencia
+        # Define reference frame
         map_msg.header.frame_id = self.get_parameter('map_frame').get_parameter_value().string_value
 
         map_msg.info.resolution = self.resolution
@@ -343,24 +342,24 @@ class PythonSlamNode(Node):
         t.header.frame_id = self.get_parameter('map_frame').get_parameter_value().string_value
         t.child_frame_id = self.get_parameter('odom_frame').get_parameter_value().string_value
 
-        # Pose estimada del robot en el mapa
+        # Estimated robot pose in map frame
         map_x, map_y, map_theta = self.current_pose
 
-        # Pose del robot según la odometría
+        # Robot pose from odometry
         odom_x = odom_pose[0]
         odom_y = odom_pose[1]
 
-        # Diferencia entre el mapa y la odometría (transformación map->odom)
+        # Difference between map and odometry frames (map->odom transform)
         dx = map_x - odom_x
         dy = map_y - odom_y
         dtheta = map_theta - odom_pose[2]
 
-        # Asignar la traslación
+        # Set translation
         t.transform.translation.x = dx
         t.transform.translation.y = dy
         t.transform.translation.z = 0.0
 
-        # Asignar la rotación
+        # Set rotation
         
         quat = quaternion_from_yaw(dtheta)
         t.transform.rotation.x = quat[0]

@@ -55,17 +55,17 @@ class State(Enum):
     AVOIDING_OBSTACLE = 3
 
 """
-Localizar el robot en el mapa, elegir puntos que calculen la distancia optima al punto elegido y que el robot
-ejecute el movimiento hasta ese punto
+Localize the robot on a map, choose target points, and compute an optimal path so the robot
+can navigate to the selected destination.
 
-Tengo un mapa, el codigo lo ubica en el mapa, en rviz hay que indicarle la pos inicial y asociará la lectura
-de scan con el mapa presente (gracia del robot = que lo corriga automatico)
+Given a map, the code localizes the robot on it. In RViz, an initial pose must be provided so
+laser scan readings can be aligned with the map (with automatic correction over time).
 
-Gracia: Hay que elegir un punto inicial para ayudar al robot a ubicarse
+An initial pose helps the robot converge faster during localization.
 
-Primero:
-Hay que localizarlo (para tener una referencia)
-Para localizar (filtro de particulas o capaz usar ICP (TP6))
+First step:
+localize the robot to obtain a consistent reference frame.
+Localization is done with a particle filter (or potentially ICP in a future iteration).
 
 """
 class AmclNode(Node):
@@ -86,7 +86,7 @@ class AmclNode(Node):
         self.declare_parameter('obstacle_avoidance_turn_speed', 0.5)
 
         # --- Parameters to set ---
-        # TODO: Setear valores default
+        # TODO: Set default values
         self.declare_parameter('num_particles', completar)
         self.declare_parameter('alpha1', completar)
         self.declare_parameter('alpha2', completar)
@@ -196,9 +196,9 @@ class AmclNode(Node):
         self.last_odom_pose = None # Reset odom tracking
 
     def initialize_particles(self, initial_pose):
-        # TODO: Inicializar particulas en base a la pose inicial con variaciones aleatorias
-        # Deben ser la misma cantidad de particulas que self.num_particles
-        # Deben tener un peso
+        # TODO: Initialize particles around the initial pose with random variations
+        # The total number of particles must match self.num_particles
+        # Each particle must have a weight
         for idx in range(self.num_particles):
             orientation = initial_pose.orientation
             poseX = initial_pose.position.x + np.random.normal(0,0.02)
@@ -209,7 +209,7 @@ class AmclNode(Node):
         self.publish_particles()
 
     def initialize_particles_randomly(self):
-        # TODO: Inizializar particulas aleatoriamente en todo el mapa
+        # TODO: Initialize particles randomly over the entire map
         
         origin_x = self.map_data.info.origin.position.x
         origin_y = self.map_data.info.origin.position.y
@@ -226,8 +226,8 @@ class AmclNode(Node):
         self.publish_particles()
 
     def timer_callback(self):
-        # TODO: Implementar maquina de estados para cada caso.
-        # Debe haber estado para PLANNING, NAVIGATING y AVOIDING_OBSTACLE, pero pueden haber más estados si se desea.
+        # TODO: Implement a state machine for each case.
+        # There should be states for PLANNING, NAVIGATING, and AVOIDING_OBSTACLE. Additional states are optional.
         if not self.map_received:
             return
 
@@ -254,7 +254,7 @@ class AmclNode(Node):
 
 
 
-        # TODO: Implementar codigo para publicar la pose estimada, las particulas, y la transformacion entre el mapa y la base del robot.
+        # TODO: Implement code to publish the estimated pose, particle cloud, and map-to-base transform.
 
         self.publish_pose(estimated_pose)
         self.publish_particles()
@@ -271,7 +271,7 @@ class AmclNode(Node):
     def motion_model(self, current_odom_tf):
         current_odom_pose = current_odom_tf.transform
         
-        # TODO: Implementar el modelo de movimiento para actualizar las particulas.
+        # TODO: Implement the motion model to update particles.
         
         self.last_odom_pose = current_odom_pose
 
@@ -286,14 +286,14 @@ class AmclNode(Node):
 
 
 
-        # TODO: Implementar el modelo de medición para actualizar los pesos de las particulas por particula
+        # TODO: Implement the measurement model to update per-particle weights.
 
     def resample(self):
-        # TODO: Implementar el resampleo de las particulas basado en los pesos.
+        # TODO: Implement particle resampling based on particle weights.
         pass
 
     def estimate_pose(self):
-        # TODO: Implementar la estimación de pose a partir de las particulas y sus pesos.
+        # TODO: Implement pose estimation from particles and their weights.
         return pose
 
     def publish_pose(self, estimated_pose):
@@ -332,7 +332,7 @@ class AmclNode(Node):
         
         t = TransformStamped()
         
-        # TODO: Completar el TransformStamped con la transformacion entre el mapa y la base del robot.
+        # TODO: Fill TransformStamped with the transform between the map and the robot base.
 
         self.tf_broadcaster.sendTransform(t)
 
