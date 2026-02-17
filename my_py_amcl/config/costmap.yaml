@@ -1,4 +1,4 @@
-#โลโก้ (Logo)
+# Costmap configuration
 # General costmap parameters
 global_costmap:
   global_costmap:
